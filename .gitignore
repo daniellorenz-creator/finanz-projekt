@@ -1,0 +1,18 @@
+# Zugangsdaten – niemals committen
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Bankdaten – sensible Originaldateien nicht im Repo
+*.pdf
+*.csv
+
+# Betriebssystem
+.DS_Store
+Thumbs.db

@@ -1,0 +1,3 @@
+# supabase<2.10 vermeidet die pyiceberg-Abhängigkeit (erfordert C++ Build Tools)
+supabase>=2.0.0,<2.10
+python-dotenv>=1.0.0
