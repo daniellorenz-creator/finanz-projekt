@@ -14,6 +14,7 @@ type ErkannterEintrag = {
   key: string
   label: string
   schnitt: number
+  schnittByJahr: Record<string, number>
   währung: string
   monate: number
 }
@@ -44,9 +45,9 @@ export default function FixkostenCard({ transactions, onFixkostenChange }: Props
   const [dropdownOffen, setDropdownOffen] = useState(false)
   const [suche, setSuche]                 = useState('')
 
-  const [newName, setNewName]       = useState('')
-  const [newBetrag, setNewBetrag]   = useState('')
-  const [newWährung, setNewWährung] = useState('EUR')
+  const [newName, setNewName]           = useState('')
+  const [newBetrag, setNewBetrag]       = useState('')
+  const [newWährung, setNewWährung]     = useState('EUR')
   const [positionSuche, setPositionSuche] = useState('')
 
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -93,7 +94,15 @@ export default function FixkostenCard({ transactions, onFixkostenChange }: Props
     saveManuell(manuell.filter(e => e.id !== id))
   }
 
-  // Erkennungs-Algorithmus
+  const alleMonate = useMemo(() =>
+    [...new Set(transactions.map(tx => tx.started_at.slice(0, 7)))].sort()
+  , [transactions])
+
+  const alleJahre = useMemo(() =>
+    [...new Set(alleMonate.map(m => m.slice(0, 4)))].sort()
+  , [alleMonate])
+
+  // Erkennungs-Algorithmus – berechnet Ø pro Jahr
   const kandidaten = useMemo((): ErkannterEintrag[] => {
     const groups: Record<string, Transaction[]> = {}
     for (const tx of transactions) {
@@ -113,10 +122,21 @@ export default function FixkostenCard({ transactions, onFixkostenChange }: Props
       const gesamt  = ausgaben.reduce((s, tx) => s + Math.abs(Number(tx.amount)), 0)
       const schnitt = gesamt / monate.size
       if (schnitt < 5) continue
+
+      // Ø pro Jahr berechnen
+      const schnittByJahr: Record<string, number> = {}
+      const jahre = new Set(ausgaben.map(tx => tx.started_at.slice(0, 4)))
+      for (const jahr of jahre) {
+        const jahresAusgaben = ausgaben.filter(tx => tx.started_at.startsWith(jahr))
+        const jahresMonate   = new Set(jahresAusgaben.map(tx => tx.started_at.slice(0, 7)))
+        const jahresGesamt   = jahresAusgaben.reduce((s, tx) => s + Math.abs(Number(tx.amount)), 0)
+        schnittByJahr[jahr]  = jahresGesamt / jahresMonate.size
+      }
+
       const freq: Record<string, number> = {}
       for (const tx of ausgaben) freq[tx.description ?? ''] = (freq[tx.description ?? ''] ?? 0) + 1
       const label = Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0]
-      result.push({ key, label, schnitt, währung: ausgaben[0].currency, monate: monate.size })
+      result.push({ key, label, schnitt, schnittByJahr, währung: ausgaben[0].currency, monate: monate.size })
     }
     return result.sort((a, b) => b.monate - a.monate)
   }, [transactions])
@@ -129,31 +149,20 @@ export default function FixkostenCard({ transactions, onFixkostenChange }: Props
     kandidaten.filter(k => ausgewählt.has(k.key))
   , [kandidaten, ausgewählt])
 
-  // Monatliche Fixkosten-Totals berechnen und nach oben melden
-  const alleMonate = useMemo(() =>
-    [...new Set(transactions.map(tx => tx.started_at.slice(0, 7)))].sort()
-  , [transactions])
-
+  // Monatliche Fixkosten – jahresspezifischer Wert pro Monat
   const fixkostenByMonth = useMemo(() => {
-    // Durchschnittlicher Fixkostenbetrag pro Monat (flache Linie)
-    let durchschnitt = 0
-
-    // Manuelle Einträge: direkt summieren
-    for (const e of manuell) {
-      durchschnitt += parseFloat(e.betrag.replace(',', '.')) || 0
-    }
-
-    // Auto-erkannte Einträge: Ø-Wert aus der Kandidatenliste verwenden
-    for (const eintrag of ausgewähltEinträge) {
-      durchschnitt += eintrag.schnitt
-    }
-
-    // Gleichen Wert für jeden Monat setzen → flache Linie
     const byMonth: Record<string, number> = {}
     for (const monat of alleMonate) {
-      byMonth[monat] = round(durchschnitt)
+      const jahr = monat.slice(0, 4)
+      let total = 0
+      for (const e of manuell) {
+        total += parseFloat(e.betrag.replace(',', '.')) || 0
+      }
+      for (const eintrag of ausgewähltEinträge) {
+        total += eintrag.schnittByJahr[jahr] ?? eintrag.schnitt
+      }
+      byMonth[monat] = round(total)
     }
-
     return byMonth
   }, [alleMonate, manuell, ausgewähltEinträge])
 
@@ -161,18 +170,24 @@ export default function FixkostenCard({ transactions, onFixkostenChange }: Props
     onFixkostenChange?.(fixkostenByMonth)
   }, [fixkostenByMonth, onFixkostenChange])
 
-  // Gesamtsumme (Durchschnitt über alle Monate)
-  const totals = useMemo(() => {
-    const map: Record<string, number> = {}
-    for (const e of manuell) {
-      const b = parseFloat(e.betrag.replace(',', '.')) || 0
-      map[e.währung] = (map[e.währung] ?? 0) + b
+  // Totals pro Jahr und Währung
+  const totalsByJahr = useMemo(() => {
+    const byJahr: Record<string, Record<string, number>> = {}
+    for (const jahr of alleJahre) {
+      byJahr[jahr] = {}
+      for (const e of manuell) {
+        const b = parseFloat(e.betrag.replace(',', '.')) || 0
+        byJahr[jahr][e.währung] = (byJahr[jahr][e.währung] ?? 0) + b
+      }
+      for (const e of ausgewähltEinträge) {
+        const val = e.schnittByJahr[jahr] ?? e.schnitt
+        byJahr[jahr][e.währung] = (byJahr[jahr][e.währung] ?? 0) + val
+      }
     }
-    for (const e of ausgewähltEinträge) {
-      map[e.währung] = (map[e.währung] ?? 0) + e.schnitt
-    }
-    return map
-  }, [manuell, ausgewähltEinträge])
+    return byJahr
+  }, [alleJahre, manuell, ausgewähltEinträge])
+
+  const hatTotals = manuell.length > 0 || ausgewähltEinträge.length > 0
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
@@ -307,40 +322,64 @@ export default function FixkostenCard({ transactions, onFixkostenChange }: Props
             )}
           </div>
 
+          {/* Ausgewählte Einträge – Ø pro Jahr */}
           {ausgewähltEinträge.length > 0 && (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-100">
-                  <th className="text-left pb-2 text-xs text-gray-400 font-medium">Position</th>
-                  <th className="text-right pb-2 text-xs text-gray-400 font-medium pr-1">Ø / Monat</th>
-                  <th className="w-6" />
-                </tr>
-              </thead>
-              <tbody>
-                {ausgewähltEinträge.map(e => (
-                  <tr key={e.key} className="border-b border-gray-50">
-                    <td className="py-2 text-gray-700 text-xs max-w-[200px] truncate" title={e.label}>{e.label}</td>
-                    <td className="py-2 text-right font-mono text-gray-700 pr-1">{fmt(e.schnitt)} {e.währung}</td>
-                    <td className="py-2 pl-1">
-                      <button onClick={() => toggleAuswahl(e.key)} className="text-gray-300 hover:text-red-400 text-lg leading-none">×</button>
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100">
+                    <th className="text-left pb-2 text-xs text-gray-400 font-medium">Position</th>
+                    {alleJahre.map(j => (
+                      <th key={j} className="text-right pb-2 text-xs text-gray-400 font-medium pr-1">{j}</th>
+                    ))}
+                    <th className="w-6" />
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {ausgewähltEinträge.map(e => (
+                    <tr key={e.key} className="border-b border-gray-50">
+                      <td className="py-2 text-gray-700 text-xs max-w-[150px] truncate" title={e.label}>{e.label}</td>
+                      {alleJahre.map(j => (
+                        <td key={j} className="py-2 text-right font-mono text-gray-700 pr-1 text-xs">
+                          {e.schnittByJahr[j] != null
+                            ? <>{fmt(e.schnittByJahr[j])} <span className="text-gray-400">{e.währung}</span></>
+                            : <span className="text-gray-300">—</span>
+                          }
+                        </td>
+                      ))}
+                      <td className="py-2 pl-1">
+                        <button onClick={() => toggleAuswahl(e.key)} className="text-gray-300 hover:text-red-400 text-lg leading-none">×</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       </div>
 
-      {Object.keys(totals).length > 0 && (
-        <div className="mt-6 pt-5 border-t border-gray-100 flex flex-wrap gap-6 items-center">
-          <span className="text-sm font-semibold text-gray-500">Total Fixkosten / Monat:</span>
-          {Object.entries(totals).sort().map(([cur, sum]) => (
-            <div key={cur} className="text-center">
-              <p className="text-2xl font-bold text-gray-800">{fmt(sum)}</p>
-              <p className="text-xs text-gray-400">{cur}</p>
-            </div>
-          ))}
+      {/* Totals pro Jahr */}
+      {hatTotals && (
+        <div className="mt-6 pt-5 border-t border-gray-100">
+          <span className="text-sm font-semibold text-gray-500 block mb-3">Fixkosten / Monat nach Jahr:</span>
+          <div className="flex flex-wrap gap-6">
+            {alleJahre.map(jahr => {
+              const jahresTotal = totalsByJahr[jahr] ?? {}
+              if (Object.keys(jahresTotal).length === 0) return null
+              return (
+                <div key={jahr} className="text-center">
+                  <p className="text-xs text-gray-400 mb-1">{jahr}</p>
+                  {Object.entries(jahresTotal).sort().map(([cur, sum]) => (
+                    <div key={cur}>
+                      <p className="text-2xl font-bold text-gray-800">{fmt(sum)}</p>
+                      <p className="text-xs text-gray-400">{cur}</p>
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
     </div>
