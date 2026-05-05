@@ -513,6 +513,7 @@ def main():
     pdf_files = sorted(
         f for f in SCRIPT_DIR.glob("*.pdf")
         if re.search(r'UBS', f.name, re.IGNORECASE) and "Kontoauszug" not in f.name
+        or re.match(r'0292000017124740H0000_Kontoauszug_', f.name)
     )
     if not pdf_files:
         sys.exit("Keine UBS PDFs im Ordner gefunden.")
